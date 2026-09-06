@@ -250,11 +250,22 @@ class ThermalPrinterPlugin : FlutterPlugin, MethodCallHandler, PluginRegistry.Re
             call.method.equals("sendDataByte") -> {
                 if (verifyIsBluetoothIsOn()) {
                     bluetoothService.setHandler(bluetoothHandler)
-                    val listInt: ArrayList<Int>? = call.argument("bytes")
-                    val ints = listInt!!.toIntArray()
-                    val bytes = ints.foldIndexed(ByteArray(ints.size)) { i, a, v -> a.apply { set(i, v.toByte()) } }
-                    val res = bluetoothService.sendDataByte(bytes)
-                    result.success(res)
+                    // MALY-POS FORK: accept a ByteArray directly.
+                    //
+                    // Dart now sends a Uint8List, which the codec delivers here
+                    // as a ByteArray with no per-byte boxing. The List branch is
+                    // kept so an older caller still works.
+                    val bytes: ByteArray? = when (val raw = call.argument<Any>("bytes")) {
+                        is ByteArray -> raw
+                        is List<*> -> ByteArray(raw.size) { i -> (raw[i] as Number).toByte() }
+                        else -> null
+                    }
+                    if (bytes == null) {
+                        Log.w(TAG, "sendDataByte: missing or unusable 'bytes' argument")
+                        result.success(false)
+                    } else {
+                        result.success(bluetoothService.sendDataByte(bytes))
+                    }
                 } else {
                     result.success(false)
                 }

@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter/services.dart';
 import 'package:thermal_printer/discovery.dart';
@@ -246,9 +247,15 @@ class BluetoothPrinterConnector implements PrinterConnector<BluetoothPrinterInpu
   Future<bool> send(List<int> bytes) async {
     try {
       if (Platform.isAndroid) {
-        // final connected = await _connect();
-        // if (!connected) return false;
-        Map<String, dynamic> params = {"bytes": bytes};
+        // MALY-POS FORK: send a Uint8List, not a plain List<int>.
+        //
+        // StandardMessageCodec encodes a typed byte list as one compact buffer,
+        // but a generic List<int> as a tagged, boxed integer each — roughly 5x
+        // the wire size, plus an ArrayList<Integer> of the same length built on
+        // the Kotlin side and then unboxed again. A receipt is ~110 KB, so that
+        // was ~550 KB across the channel and 110,000 boxed objects per print.
+        final payload = bytes is Uint8List ? bytes : Uint8List.fromList(bytes);
+        Map<String, dynamic> params = {"bytes": payload};
         return await flutterPrinterChannel.invokeMethod('sendDataByte', params);
       } else if (Platform.isIOS) {
         Map<String, Object> args = Map();
