@@ -70,14 +70,39 @@ class USBPrinterService private constructor(private var mHandler: Handler?) {
     fun init(reactContext: Context?) {
         mContext = reactContext
         mUSBManager = mContext!!.getSystemService(Context.USB_SERVICE) as UsbManager
+        // MALY-POS FORK: explicit permission intent + flagged receiver.
+        //
+        // Two rules Android 14 enforces once the app targets API 34+, on
+        // Android 14 and newer devices only:
+        //  1. A MUTABLE PendingIntent around an *implicit* intent is rejected
+        //     with IllegalArgumentException. It has to stay mutable — the USB
+        //     service fills in the device extra — so the intent is made
+        //     explicit by naming our own package instead.
+        //  2. registerReceiver() with a filter that contains a non-system
+        //     action (ACTION_USB_PERMISSION is ours) must state whether the
+        //     receiver is exported, or it throws SecurityException.
+        //
+        // Either exception escaped onAttachedToEngine before bluetoothService
+        // was assigned, so every later method call — Bluetooth included —
+        // failed with "lateinit property bluetoothService has not been
+        // initialized". Android 12/13 devices never enforce this, which is
+        // why the same build printed fine there.
+        val permissionIntent = Intent(ACTION_USB_PERMISSION).setPackage(mContext!!.packageName)
         mPermissionIndent = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
-            PendingIntent.getBroadcast(mContext, 0, Intent(ACTION_USB_PERMISSION), PendingIntent.FLAG_MUTABLE)
+            PendingIntent.getBroadcast(mContext, 0, permissionIntent, PendingIntent.FLAG_MUTABLE)
         } else {
-            PendingIntent.getBroadcast(mContext, 0, Intent(ACTION_USB_PERMISSION), 0)
+            PendingIntent.getBroadcast(mContext, 0, permissionIntent, 0)
         }
         val filter = IntentFilter(ACTION_USB_PERMISSION)
         filter.addAction(UsbManager.ACTION_USB_DEVICE_DETACHED)
-        mContext!!.registerReceiver(mUsbDeviceReceiver, filter)
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+            // Not exported: the permission answer arrives through our own
+            // (now explicit) PendingIntent and the detach event is a protected
+            // system broadcast, so nothing outside this app needs to reach it.
+            mContext!!.registerReceiver(mUsbDeviceReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            mContext!!.registerReceiver(mUsbDeviceReceiver, filter)
+        }
         Log.v(LOG_TAG, "ESC/POS Printer initialized")
     }
 

@@ -102,6 +102,35 @@ thread قاعد blocked على `read()`، فلما إحنا نقفل الاتص�
 كانت بترجع `false` ثابتة حتى لما تنجح، فمكنش ينفع تفرّق بين socket اتقفل وواحد رفض
 يتقفل — وsocket نص مفتوح بيخلي كل محاولة اتصال بعدها تعمل timeout.
 
+## ٥. أندرويد ١٤+ كان بيوقّع الـ plugin كله وقت التحميل
+
+`USBPrinterService.init()` · `USBPrinterAdapter.init()` · `ThermalPrinterPlugin.onAttachedToEngine()`
+
+الأعراض: على أندرويد ١٤ وأحدث (والتطبيق بيستهدف API 34+) أي استدعاء للـ plugin —
+حتى البلوتوث — كان بيرجع:
+
+```
+PlatformException(error, lateinit property bluetoothService has not been initialized, ...)
+```
+
+بينما نفس البناء شغّال على أندرويد ١٢ و١٣.
+
+السبب إن `onAttachedToEngine` بيسجّل الـ method handler الأول، وبعدها بيعمل init
+للـ USB، **وبعدها** بيعمل `bluetoothService`. وأندرويد ١٤ بيرفض حاجتين في الـ USB
+init دي بيرمي exception:
+
+1. `PendingIntent.getBroadcast(..., FLAG_MUTABLE)` على intent **ضمني** (من غير
+   package) بقى ممنوع. لازم يفضل mutable لأن نظام الـ USB بيحط فيه الجهاز، فاتعمل
+   صريح بـ `setPackage(packageName)`.
+2. `registerReceiver()` بفلتر فيه action مش بتاع النظام (`ACTION_USB_PERMISSION`
+   بتاعنا) لازم يقول الـ receiver exported ولا لأ، وإلا `SecurityException`. بقى
+   `RECEIVER_NOT_EXPORTED` من API 33: الرد بيوصلنا من الـ PendingIntent بتاعنا، وحدث
+   الفصل broadcast محمي من النظام.
+
+الـ exception كان بيخرج من `onAttachedToEngine` قبل ما `bluetoothService` تتعمل،
+فالـ plugin بيفضل نص مبني وكل استدعاء بعدها بيقع. اتضاف كمان `try/catch` حوالين
+الـ USB init نفسه: لو فشل لأي سبب جديد، الخسارة تبقى USB بس مش كل وسائل الطباعة.
+
 ---
 
 ## لو حبيت ترجع للأصل

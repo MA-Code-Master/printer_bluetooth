@@ -198,7 +198,20 @@ class ThermalPrinterPlugin : FlutterPlugin, MethodCallHandler, PluginRegistry.Re
 
         context = flutterPluginBinding.applicationContext
         adapter = USBPrinterService.getInstance(usbHandler)
-        adapter.init(context)
+
+        // MALY-POS FORK: a USB init failure must not take Bluetooth down too.
+        //
+        // The method-call handler is already registered above, so anything
+        // thrown here leaves a half-built plugin behind: bluetoothService is
+        // never assigned and every later call dies with "lateinit property
+        // bluetoothService has not been initialized" — the Android 14+ story
+        // in USBPrinterService.init. The USB fix removes the known cause; this
+        // makes sure the next unknown one only costs USB, not every transport.
+        try {
+            adapter.init(context)
+        } catch (e: Exception) {
+            Log.e(TAG, "USB printer service failed to initialise; USB printing is unavailable", e)
+        }
 
         bluetoothService = BluetoothService.getInstance(bluetoothHandler)
     }
