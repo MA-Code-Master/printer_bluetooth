@@ -233,38 +233,42 @@ class USBPrinterService private constructor(private var mHandler: Handler?) {
         Log.v(LOG_TAG, "Printing bytes")
         val isConnected = openConnection()
         if (isConnected) {
-            val chunkSize = mEndPoint!!.maxPacketSize
-            Log.v(LOG_TAG, "Max Packet Size: $chunkSize")
             Log.v(LOG_TAG, "Connected to device")
             Thread {
                 synchronized(printLock) {
-                    val vectorData: Vector<Byte> = Vector()
-                    for (i in bytes.indices) {
-                        val `val`: Int = bytes[i]
-                        vectorData.add(`val`.toByte())
-                    }
-                    val temp: Array<Any> = vectorData.toTypedArray()
-                    val byteData = ByteArray(temp.size)
-                    for (i in temp.indices) {
-                        byteData[i] = temp[i] as Byte
-                    }
-                    var b = 0
-                    if (mUsbDeviceConnection != null) {
-                        if (byteData.size > chunkSize) {
-                            var chunks: Int = byteData.size / chunkSize
-                            if (byteData.size % chunkSize > 0) {
-                                ++chunks
-                            }
-                            for (i in 0 until chunks) {
-//                                val buffer: ByteArray = byteData.copyOfRange(i * chunkSize, chunkSize + i * chunkSize)
-                                val buffer: ByteArray = Arrays.copyOfRange(byteData, i * chunkSize, chunkSize + i * chunkSize)
-                                b = mUsbDeviceConnection!!.bulkTransfer(mEndPoint, buffer, chunkSize, 100000)
-                            }
-                        } else {
-                            b = mUsbDeviceConnection!!.bulkTransfer(mEndPoint, byteData, byteData.size, 100000)
+                    // MALY-POS FORK: one pass into a ByteArray. Upstream boxed
+                    // every byte into a Vector<Byte>, then an Array<Any>, then
+                    // copied it out again — three passes over a 100+ KB receipt
+                    // before the first byte left.
+                    val byteData = ByteArray(bytes.size) { bytes[it].toByte() }
+                    val connection = mUsbDeviceConnection ?: return@synchronized
+
+                    // MALY-POS FORK: blocks of USB_WRITE_BLOCK bytes.
+                    //
+                    // Upstream sent one maxPacketSize per bulkTransfer() — 64
+                    // bytes on the printers in the field — and each call waits
+                    // for its packet to be taken. A 130 KB receipt was ~2000
+                    // round trips, slower than the head prints, so the receipt
+                    // came out in stops and starts that the same printer never
+                    // shows from Windows, whose spooler writes in big blocks.
+                    //
+                    // The host splits a block into packets itself, and the
+                    // printer holds the rest off (NAK) while its buffer is
+                    // full, so nothing is lost: same bytes, same order, sent as
+                    // fast as the printer takes them. Also gone: the last chunk
+                    // was padded with zeros to a full packet.
+                    var offset = 0
+                    while (offset < byteData.size) {
+                        val length = minOf(USB_WRITE_BLOCK, byteData.size - offset)
+                        val sent = connection.bulkTransfer(mEndPoint, byteData, offset, length, 100000)
+                        if (sent <= 0) {
+                            // Unplugged mid-receipt: the rest would go nowhere.
+                            Log.e(LOG_TAG, "USB write failed at $offset/${byteData.size}: $sent")
+                            break
                         }
-                        Log.i(LOG_TAG, "Return code: $b")
+                        offset += sent
                     }
+                    Log.i(LOG_TAG, "Sent $offset/${byteData.size} bytes")
                 }
             }.start()
             return true
@@ -286,6 +290,10 @@ class USBPrinterService private constructor(private var mHandler: Handler?) {
         const val STATE_USB_CONNECTED = 3 // now connected to a remote device
 
         private val printLock = Any()
+
+        // MALY-POS FORK: the most bulkTransfer() takes in one call on every
+        // Android version (the cap was lifted only in Android 9).
+        private const val USB_WRITE_BLOCK = 16384
 
         fun getInstance(handler: Handler): USBPrinterService {
             if (mInstance == null) {
